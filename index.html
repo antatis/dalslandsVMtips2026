@@ -1252,11 +1252,11 @@ function computeWildcard() {
 function renderInsights() {
   const el = document.getElementById('insightsView');
   const subnav = `
-    <div class="view-toggle" style="margin-bottom:1.25rem;flex-wrap:wrap;">
-      <button class="toggle-btn ${insightView==='h2h'?'active':''}" onclick="setInsightView('h2h')">Head-to-head</button>
-      <button class="toggle-btn ${insightView==='kuriosa'?'active':''}" onclick="setInsightView('kuriosa')">Gruppspel</button>
-      <button class="toggle-btn ${insightView==='slutspel'?'active':''}" onclick="setInsightView('slutspel')">Slutspel</button>
-      <button class="toggle-btn ${insightView==='bonus'?'active':''}" onclick="setInsightView('bonus')">Bonusfrågor</button>
+    <div class="view-toggle" style="margin-bottom:1.25rem;flex-wrap:nowrap;">
+      <button class="toggle-btn ${insightView==='h2h'?'active':''}" onclick="setInsightView('h2h')" style="flex:1;text-align:center;padding:5px 4px;font-size:12px;">Head-to-head</button>
+      <button class="toggle-btn ${insightView==='kuriosa'?'active':''}" onclick="setInsightView('kuriosa')" style="flex:1;text-align:center;padding:5px 4px;font-size:12px;">Gruppspel</button>
+      <button class="toggle-btn ${insightView==='slutspel'?'active':''}" onclick="setInsightView('slutspel')" style="flex:1;text-align:center;padding:5px 4px;font-size:12px;">Slutspel</button>
+      <button class="toggle-btn ${insightView==='bonus'?'active':''}" onclick="setInsightView('bonus')" style="flex:1;text-align:center;padding:5px 4px;font-size:12px;">Bonusfrågor</button>
     </div>`;
 
   let body = '';
