@@ -514,6 +514,9 @@
         <button class="btn sm danger" onclick="clearDemoData()">↺ Rensa exempel</button>
         <span style="font-size:11px;color:var(--muted);align-self:center;">Bara lokalt – sparas inte.</span>
       </div>
+      <div class="row" id="clearFacitRow" style="margin-top:8px;display:none;">
+        <button class="btn sm danger" onclick="clearFacit()">🧹 Rensa facit</button>
+      </div>
     </div>
 
     </div><!-- end mainView -->
@@ -565,6 +568,8 @@ async function loadSnapshots() {
     _facitRowId = facitRow ? facitRow.id : null;
     snapshots = all.filter(s => s.label !== '__FACIT__');
     updateFooter();
+    const cfr = document.getElementById('clearFacitRow');
+    if (cfr) cfr.style.display = _facitRowId ? 'block' : 'none';
     return snapshots;
   } catch(e) { setStatus('Kunde inte hämta historik: ' + e.message, true); return []; }
 }
@@ -621,7 +626,103 @@ async function toggleAdmin() {
       if (tag) tag.style.color = 'var(--yellow)';
     } else if (pw !== null) { alert('Fel lösenord.'); }
   }
+  if (currentTab === 'matchday') renderMatchday();
 }
+// ── shortDate ────────────────────────────────────────────────────
+function shortDate(dstr) {
+  const d = new Date(dstr + 'T12:00:00');
+  return d.toLocaleDateString('sv-SE', { day: 'numeric', month: 'short' });
+}
+
+// ── calcLivePoints ───────────────────────────────────────────────
+function calcLivePoints() {
+  const pts = {};
+  VMDATA.players.forEach(name => {
+    let total = 0;
+    const tips = VMDATA.tips[name] || {};
+    Object.keys(FACIT).forEach(mn => {
+      const res = FACIT[mn];
+      const tip = tips[mn];
+      if (tip && res) total += matchPoints(tip, res);
+    });
+    pts[name] = total;
+  });
+  return pts;
+}
+
+// ── liveCurrentData ──────────────────────────────────────────────
+function liveCurrentData() {
+  let scores;
+  if (Object.keys(FACIT).length > 0) {
+    scores = calcLivePoints();
+  } else if (snapshots.length > 0) {
+    scores = snapshots[snapshots.length - 1].scores;
+  } else {
+    return null;
+  }
+  return Object.entries(scores)
+    .map(([name, points]) => ({ name, points: Number(points) }))
+    .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name, 'sv'));
+}
+
+// ── saveMatchResult ──────────────────────────────────────────────
+async function saveMatchResult(matchNum, date) {
+  const hVal = document.getElementById('fh_' + matchNum);
+  const aVal = document.getElementById('fa_' + matchNum);
+  if (!hVal || !aVal) return;
+  const h = parseInt(hVal.value, 10);
+  const a = parseInt(aVal.value, 10);
+  if (isNaN(h) || isNaN(a) || h < 0 || a < 0) { setStatus('Ogiltigt resultat – ange heltal ≥ 0', true); return; }
+  FACIT[matchNum] = [h, a];
+  loading(true, 'Sparar resultat...');
+  try {
+    await saveFacit(FACIT);
+    await loadSnapshots();
+    currentData = liveCurrentData();
+    if (currentData) { renderLeaderboard(currentData); renderMetricCards(); }
+    renderMatchday();
+    await autoSnapshotIfComplete(date);
+  } catch(e) { setStatus('Fel vid sparning: ' + e.message, true); }
+  loading(false);
+}
+
+// ── autoSnapshotIfComplete ────────────────────────────────────────
+async function autoSnapshotIfComplete(date) {
+  const dayMatches = VMDATA.schedule.filter(m => m.d === date && m.n <= GROUP_LAST_MATCH);
+  if (!dayMatches.length) return;
+  const allDone = dayMatches.every(m => Array.isArray(FACIT[m.n]));
+  if (!allDone) return;
+  const label = shortDate(date);
+  if (snapshots.some(s => s.label === label)) return;
+  const scores = calcLivePoints();
+  try {
+    await supabase('POST', 'snapshots', { label, scores });
+    await loadSnapshots();
+    currentData = liveCurrentData();
+    if (currentData) { renderLeaderboard(currentData); renderMetricCards(); renderChart(); renderTournamentStats(); renderFacitStats(); }
+    setStatus('Snapshot sparad automatiskt: ' + label);
+  } catch(e) { setStatus('Fel vid auto-snapshot: ' + e.message, true); }
+}
+
+// ── clearFacit ────────────────────────────────────────────────────
+async function clearFacit() {
+  if (!_facitRowId) return;
+  if (!confirm('Rensa allt facit? Detta kan inte ångras.')) return;
+  loading(true, 'Rensar facit...');
+  try {
+    await supabase('DELETE', 'snapshots?id=eq.' + _facitRowId);
+    FACIT = {};
+    _facitRowId = null;
+    const cfr = document.getElementById('clearFacitRow');
+    if (cfr) cfr.style.display = 'none';
+    currentData = liveCurrentData();
+    if (currentData) renderLeaderboard(currentData);
+    renderMatchday();
+    setStatus('Facit rensat.');
+  } catch(e) { setStatus('Fel vid rensning: ' + e.message, true); }
+  loading(false);
+}
+
 function extractPlayers(wb) {
   const players = [];
   wb.SheetNames.forEach(name => {
@@ -834,15 +935,19 @@ function renderLeaderboard(players) {
   }
 
   // Normal standings
-  // Rörelse + dagens poängskörd sedan förra speldagen (om historik finns)
+  // Rörelse + dagens poängskörd — bara när live-poäng matchar senaste snapshot exakt
   let prevRanks = null, dayGain = null;
   const histSnaps = (snapshots||[]).filter(s => s && s.scores);
   if (histSnaps.length >= 2) {
-    const mx = Math.max(0, ...Object.values(histSnaps[histSnaps.length-1].scores).map(Number));
-    if (mx > 0) {
-      prevRanks = snapRankMap(histSnaps[histSnaps.length-2].scores);
-      const prevS = histSnaps[histSnaps.length-2].scores, curS = histSnaps[histSnaps.length-1].scores;
-      dayGain = {}; Object.keys(curS).forEach(n => dayGain[n] = (Number(curS[n])||0) - (Number(prevS[n])||0));
+    const latestSnap = histSnaps[histSnaps.length-1].scores;
+    const liveMatchesSnap = players.every(p => p.points === Number(latestSnap[p.name]));
+    if (liveMatchesSnap) {
+      const mx = Math.max(0, ...Object.values(latestSnap).map(Number));
+      if (mx > 0) {
+        prevRanks = snapRankMap(histSnaps[histSnaps.length-2].scores);
+        const prevS = histSnaps[histSnaps.length-2].scores, curS = latestSnap;
+        dayGain = {}; Object.keys(curS).forEach(n => dayGain[n] = (Number(curS[n])||0) - (Number(prevS[n])||0));
+      }
     }
   }
   let rank = 1;
@@ -1132,7 +1237,11 @@ function renderChart() {
     : snapshots;
   if (src.length < 2) { canvas.style.display = 'none'; placeholder.style.display = 'flex'; renderChartFocus(); return; }
   canvas.style.display = 'block'; placeholder.style.display = 'none';
-  const labels = src.map(s => s.label);
+  const labels = src.map(s => {
+    // Convert "12 jun" style or date string to short form, keep custom labels as-is
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s.label)) return shortDate(s.label);
+    return s.label;
+  });
   const allNames = [...new Set(src.flatMap(s => Object.keys(s.scores)))];
   const datasets = allNames.map((name, i) => {
     const color = PALETTE[i % PALETTE.length];
@@ -1854,10 +1963,29 @@ function renderMatchday() {
         </span>`;
       }).join('');
 
+      let adminRow = '';
+      if (adminMode) {
+        const existing = FACIT[m.n];
+        const hv = existing ? existing[0] : '';
+        const av = existing ? existing[1] : '';
+        const btnLabel = existing ? 'Ändra' : 'Spara';
+        const btnStyle = existing
+          ? 'padding:5px 12px;border-radius:6px;font-size:12px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;font-family:\'DM Sans\',sans-serif;'
+          : 'padding:5px 12px;border-radius:6px;font-size:12px;border:1px solid var(--yellow);background:rgba(255,218,0,0.12);color:var(--yellow);cursor:pointer;font-family:\'DM Sans\',sans-serif;font-weight:600;';
+        const inputStyle = 'width:44px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px;font-family:\'Bebas Neue\',sans-serif;text-align:center;';
+        adminRow = `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;">
+          <span style="font-size:12px;color:var(--muted);flex:1;">Resultat:</span>
+          <input id="fh_${m.n}" type="number" min="0" max="20" value="${hv}" placeholder="H" style="${inputStyle}" />
+          <span style="color:var(--muted);font-size:14px;">–</span>
+          <input id="fa_${m.n}" type="number" min="0" max="20" value="${av}" placeholder="B" style="${inputStyle}" />
+          <button onclick="saveMatchResult(${m.n}, '${m.d}')" style="${btnStyle}">${btnLabel}</button>
+        </div>`;
+      }
       return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1rem 1.1rem;margin-bottom:12px;">
         ${header}
         ${extra}
         <div style="display:flex;flex-wrap:wrap;gap:6px;">${chips}</div>
+        ${adminRow}
       </div>`;
     }).join('');
     if (!matches.length) body = '<p style="padding:1.5rem;text-align:center;color:var(--muted);font-size:14px;">Inga matcher denna dag</p>';
@@ -1965,24 +2093,23 @@ async function init() {
   document.getElementById('fetchBar').style.display = 'block';
   await loadSnapshots();
   document.getElementById('fetchBar').style.display = 'none';
-  if (snapshots.length > 0) {
-    const latest = snapshots[snapshots.length - 1];
-    currentData = Object.entries(latest.scores).map(([name, points]) => ({ name, points })).sort((a,b) => b.points - a.points || a.name.localeCompare(b.name, 'sv'));
+  if (snapshots.length > 0 || Object.keys(FACIT).length > 0) {
+    currentData = liveCurrentData();
     document.getElementById('uploadZone').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
-    renderLeaderboard(currentData); renderMetricCards(); renderChart(); renderTournamentStats(); renderFacitStats();
+    if (currentData) { renderLeaderboard(currentData); renderMetricCards(); renderChart(); renderTournamentStats(); renderFacitStats(); }
   }
   setInterval(async () => {
     if (_realSnapshots !== null) return; // exempeldata visas → pausa pollning
-    const prev = snapshots.length;
+    const prevSnaps = snapshots.length;
+    const prevFacit = Object.keys(FACIT).length;
     await loadSnapshots();
-    if (snapshots.length !== prev) {
-      renderChart(); renderMetricCards(); renderTournamentStats(); renderFacitStats();
-      if (snapshots.length > 0) {
-        const latest = snapshots[snapshots.length - 1];
-        currentData = Object.entries(latest.scores).map(([n,p])=>({name:n,points:p})).sort((a,b)=>b.points-a.points || a.name.localeCompare(b.name, 'sv'));
-        renderLeaderboard(currentData);
-      }
+    const facitChanged = Object.keys(FACIT).length !== prevFacit;
+    const snapsChanged = snapshots.length !== prevSnaps;
+    if (snapsChanged || facitChanged) {
+      currentData = liveCurrentData();
+      if (currentData) { renderLeaderboard(currentData); renderMetricCards(); }
+      if (snapsChanged) { renderChart(); renderTournamentStats(); renderFacitStats(); }
     }
   }, 30000);
 }
